@@ -1,0 +1,266 @@
+---
+title: 'Lumpfish logbook data: from processing stage to CPUE'
+author: "SÞJ"
+date: '`r Sys.Date()`'
+---
+
+## Preliminary
+Install packages, note that some care is needed when installing package `dplyrOracle`, also updating of packages and/or the R-system is generally recommended and may become necessary for things to work. 
+
+```{r, echo=TRUE,message=FALSE}
+# install.packages("devtools", repos = "http://cran.hafro.is")
+## may further require installation of R-tools
+# devtools::install_github("hadley/dplyr")
+## consider adding `build_vignettes = TRUE`
+# devtools::install_github("fishvice/dplyrOracle", args = "--no-multiarch")
+# devtools::install_github("fishvice/mar")
+library(dplyr); library(dplyrOracle); library(mar)
+library(ggplot2); library(cowplot)
+```
+
+Setting up connections to the grasl tables (NOTE 'afli.g_*' tables are stale):
+
+```{r, echo=TRUE,message=FALSE}
+mar <- src_oracle("mar")
+sokn <- tbl_mar(mar, "afli.grasl_sokn")
+stofn <- tbl_mar(mar, "afli.grasl_stofn")
+# in case we want to go into lumpy-area analysis
+greitir <- tbl_mar(mar, "afli.grasleppureitur")
+```
+
+## Data retrieval
+
+We take a look at what we have got, number of records with effort for just the latest years:
+
+```{r, echo=TRUE,message=FALSE}
+sokn %>% 
+  group_by(vear) %>% 
+  summarize(n = n()) %>% 
+  arrange(vear) %>% 
+  collect() %>% 
+  tail()
+```
+_variable # of records, interestingly, 10 records without year._
+
+## Data browsing
+
+We look at the split of 'stofn' entries between processing stages in a
+recent year:
+
+```{r, echo=TRUE,message=FALSE}
+stofn %>%
+  filter(vear == 2015) %>%
+  group_by(teg_verkunar) %>%
+  summarize(n = n()) %>%
+  arrange(teg_verkunar)
+```
+also the most recent data __(check with Palli if they are ready)__:
+
+```{r, echo=TRUE,message=FALSE}
+stofn %>%
+  filter(vear == 2016) %>%
+  group_by(teg_verkunar) %>%
+  summarize(n = n()) %>%
+  arrange(teg_verkunar)
+```
+
+_conclude that the 2016 data are probably incomplete, also hope we can safely assume that stage 1 is the most common one in the system as of now, what about what sometimes was discussed as stage 0 i.e. are whole lumpfish ever recorded in the logbooks??._
+
+Note that for one of the years no processing stage is given, this
+needs to be figured out (see below) _(in past index calculations I have perhaps sloppyly assumed 'teg_verkunar:1 or wet roe' when missing)_.
+
+Join the main tables together:
+
+```{r, echo=TRUE,message=FALSE}
+sokn %>%
+  right_join(stofn, by = c("vear", "skipnr")) %>%
+  collect(n = Inf) -> grasl
+# saveRDS(grasl, "grasl.rds")
+```
+
+in a local object with the data from the two main tables merged
+together, possibly saving to a local file.
+
+We take a look at records with both numbers and amount of roe given:
+
+```{r, echo=TRUE,message=FALSE} 
+grasl %>%
+  filter(fj_grasl > 0,
+    kg_hrogn > 0,
+    teg_verkunar > 0) %>%
+  group_by(teg_verkunar) %>%
+  summarize(totn = sum(fj_grasl), 
+    totroe = sum(kg_hrogn)) %>% 
+    mutate(roeperfish = totroe/totn,
+      ratio = round(roeperfish/roeperfish[1],3))
+```
+
+and see we are not far off from the values in a manuscript being sent
+between Skagaströnd and Skúlagata. Approach this from another angle, what about the means and medians for each processing stage?:
+
+```{r, echo=TRUE,message=FALSE} 
+grasl %>%
+  filter(fj_grasl > 0,
+    kg_hrogn > 0,
+    teg_verkunar > 0) %>%
+  group_by(teg_verkunar) %>%
+  summarize(mean_r = mean(kg_hrogn/fj_grasl), 
+    med_r = median(kg_hrogn/fj_grasl)) %>%
+  mutate(mean_rat = round(mean_r/mean_r[1],3),
+    med_rat = round(med_r/med_r[1],3))
+```
+_how to choose, should we filter/trim the data in some way to get more stable estimation of these conversion factors??_
+
+Some questions are raised,
+e.g. shall we ignore the data with missing processing stage??
+
+## Index calculation and comparison
+
+__very much up in the air, move to end after comparasion of old (SÞJ) and new (JK) approach, decide on an index after better understanding of differences__
+
+Attempt to collate a converted data set similar to the one used in the
+past 'fjvisit' in scripts 'logbookYYYY.R':
+
+```{r, echo=TRUE,message=FALSE}
+grasl %>%
+  mutate(f = dregin*gerd_neta,
+    kg = 3.28*kg_hrogn,
+    y = ifelse(teg_verkunar == 1, kg,
+          ifelse(teg_verkunar == 2, kg/0.94,
+            ifelse(teg_verkunar == 3, kg/0.77,
+              ifelse(teg_verkunar == 4, kg/0.81, fj_grasl*3.02))))) -> data
+```
+_need to come to better grips with the both dplyr and the data inputs before I'm happy_
+
+```{r, echo=TRUE,message=FALSE}
+grasl %>%
+  filter(teg_verkunar > 0,
+    kg_hrogn > 0 | fj_grasl > 0,
+    gerd_neta > 0) -> d_to_use
+nrow(grasl)
+nrow(d_to_use)
+```
+
+Attempting to re-create the 'fjvisit' index from 'logbooksYYYY.R':
+
+```{r, echo=TRUE,message=FALSE}
+sokn %>%
+  right_join(stofn, by = c("vear", "skipnr")) %>%
+  filter(dregin > 0,
+    gerd_neta > 0,
+    kg_hrogn > 0 | fj_grasl > 0) %>%
+  mutate(yyyy = vear,
+    stutt = dregin*gerd_neta,
+    verk = teg_verkunar,
+    reikn_fj = ifelse(is.na(fj_grasl), 
+      ifelse(teg_verkunar == 1 | is.na(teg_verkunar), kg_hrogn/0.91,
+        ifelse(teg_verkunar == 2, kg_hrogn/0.82,
+          ifelse(teg_verkunar %in% 3:4, kg_hrogn/0.67, fj_grasl))))) %>%
+  collect(n = Inf) %>% 
+  group_by(yyyy) %>% 
+  summarize(y = sum(reikn_fj),
+    f = sum(stutt),
+    u = mean(reikn_fj/stutt),
+    u2 = y/f) -> fj_visit
+```         
+_failed_
+
+## Barplots galore
+
+We will have to document missingness in the crucial columns listing quantity and effort, and the categorization columns type of roe processing, type of net, mesh size. Perhaps other aspects of the data could be given consideration (eg depth, soak, area, rect, ...), ... 
+
+### Processing of roe
+
+The stages of processing in the logbook data are:
+
+1. Wet roe
+2. Roe wich the fluid has 'run off'.
+3. Roe ready to be salted.
+4. Salted roe.
+
+coded in column 'teg_verkunar' in table 'afli.grasl_stofn'. In at least some versions of the printed logbook form the code '0: whole lumpfish' is listed, but it has never been entered into the logbook database for some reason. Is it possible that for the years after landings became obligatory kilograms of whole lumpfish are recorded for boats missing an entry for 'type of processing/tegund verkunar'? Be that as it may, here is a plot showing the split within years, first for the 'stofn' entries (A), and then for the actual recorded effort (B):
+
+```{r, echo=TRUE,message=FALSE}
+
+stofn %>%
+  mutate(year = vear) %>%
+  group_by(vear, teg_verkunar) %>%
+  collect(n = Inf) %>%
+  summarize(n=n()) %>% 
+  arrange(vear,teg_verkunar) %>%
+  ggplot(aes(vear, n, fill = teg_verkunar)) +
+    geom_bar(stat = "identity") +
+  background_grid(major = "xy", minor = "none") -> a
+
+grasl %>%
+  mutate(year = vear) %>%
+  group_by(vear, teg_verkunar) %>% 
+  summarize(n=n()) %>% 
+  arrange(vear,teg_verkunar) %>%
+  ggplot(aes(vear, n, fill = teg_verkunar)) +
+    geom_bar(stat = "identity") +
+  background_grid(major = "xy", minor = "none") -> b
+
+## using cowplot to present these one after the other
+plot_grid(a, b, labels = c('A', 'B'), nrow = 2, align = "h")
+```
+
+### Type or length of net
+
+Nets are either short or long, coded as 1 or 2 respectively in column 'gerd_neta'. In order to standardize effort number of nets can be multiplied by the code for net type, giving short net equivalents. The following plot shows the use of short and long nets (along with missingness) by year, first for the 'stofn' entries (A), and then for the actual recorded effort (B):
+
+```{r, echo=TRUE,message=FALSE}
+
+stofn %>%
+  mutate(year = vear) %>%
+  group_by(year, gerd_neta) %>%
+  collect(n = Inf) %>%
+  summarize(n=n()) %>% 
+  arrange(year, gerd_neta) %>%
+  ggplot(aes(year, n, fill = gerd_neta)) +
+    geom_bar(stat = "identity") +
+  background_grid(major = "xy", minor = "none") -> a
+
+grasl %>%
+  mutate(year = vear) %>%
+  group_by(year, gerd_neta) %>% 
+  summarize(n = n()) %>% 
+  arrange(year, gerd_neta) %>%
+  ggplot(aes(year, n, fill = gerd_neta)) +
+    geom_bar(stat = "identity") +
+  background_grid(major = "xy", minor = "none") -> b
+
+plot_grid(a, b, labels = c('A', 'B'), nrow = 2, align = "h")
+```
+
+_missingness seems to apply to a limited part of the total effort, thus we can probably safely drop the records without type of net._
+
+### Mesh size
+
+Mesh size is mostly 10 1/2" or 11", coded as 1 and 2, respectively. Code 3 is unknown at the moment (I've forgotten what Palli told me, and he won't be in until next week.). Similar as for the processing and net lengths, here's a development of the use of meshes:
+
+```{r, echo=TRUE,message=FALSE}
+
+stofn %>%
+  mutate(year = vear) %>%
+  group_by(year, moskvi) %>%
+  collect(n = Inf) %>%
+  summarize(n=n()) %>% 
+  arrange(year, moskvi) %>%
+  ggplot(aes(year, n, fill = moskvi)) +
+    geom_bar(stat = "identity") +
+  background_grid(major = "xy", minor = "none") -> a
+
+grasl %>%
+  mutate(year = vear) %>%
+  group_by(year, moskvi) %>% 
+  summarize(n = n()) %>% 
+  arrange(year, moskvi) %>%
+  ggplot(aes(year, n, fill = moskvi)) +
+    geom_bar(stat = "identity") +
+  background_grid(major = "xy", minor = "none") -> b
+
+plot_grid(a, b, labels = c('A', 'B'), nrow = 2, align = "h")
+```
+_this is rather strange, why so many missing entries for the 92-96 period. Is code 3 used for 'mix of meshes'? Goes to show that these 'constants' should be entered on each record, the stofn table should probably be decommissioned._
+
